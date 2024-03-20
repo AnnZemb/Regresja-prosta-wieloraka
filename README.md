@@ -31,13 +31,3 @@ Projekt skupia się na analizie danych dotyczących zdrowia, stylu życia i jako
 5. **Testowanie założeń modelu**: Sprawdzamy, czy założenia modelu regresji są spełnione, przeprowadzając testy normalności, homoskedastyczności, niezależności reszt itp.
 
 6. **Wartości wpływowe i odległość Cook'a**: Analizujemy wartości wpływowe oraz odległość Cook'a, aby ocenić wpływ poszczególnych obserwacji na model.
-
-## Uwagi:
-
-- Proszę pamiętać, że raport zawiera szczegółową analizę danych, przetwarzanie i testowanie modeli regresji. Każdy krok analizy jest szczegółowo opisany w raporcie w formacie HTML i PDF.
-
----
-
-W razie pytań lub uwag proszę o kontakt.
-
-*Dziękuję!*
