@@ -1,0 +1,515 @@
+---
+title: "Regresja i analiza wariancji - PROJEKT"
+author:
+  name: Anna Zembol
+  affiliation: Politechnika Krakowska
+subtitle: "Przewidywanie czasu snu na podstawie innych czynników"
+output:
+  html_document:
+    theme: readable
+    toc: yes
+    toc_float: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(cache = TRUE, warning = TRUE, message = FALSE)
+library(tidyverse) 
+library(rstatix)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(ggcorrplot)
+library(caret)
+``` 
+
+```{r}
+dataset <- readr::read_csv('Sleep_health_and_lifestyle_dataset.csv')
+head(dataset)
+```
+
+```{r}
+dataset <- subset(dataset, select = -c(Occupation))
+head(dataset)
+```
+```{r}
+dataset <- dataset %>%
+  separate("Blood Pressure", into = c("Blood Systolic Pressure", "Blood Diastolic Pressure"), sep = "/")
+
+dataset$`Blood Systolic Pressure` <- as.integer(dataset$`Blood Systolic Pressure`)
+dataset$`Blood Diastolic Pressure` <- as.integer(dataset$`Blood Diastolic Pressure`)
+```
+
+```{r}
+dataset$`BMI Category` <- ifelse(dataset$`BMI Category` == "Normal Weight", "Normal", dataset$`BMI Category`)
+```
+
+```{r}
+
+dataset2 <- dataset %>%
+  mutate(Gender_Male = ifelse(Gender == 'Male', 1, 0),
+         Gender_Female = ifelse(Gender == 'Female', 1, 0))
+
+
+unique_bmi_categories <- unique(dataset$`BMI Category`)
+for (bmi_category in unique_bmi_categories) {
+  column_name <- paste("BMI_", gsub(" ", "", bmi_category), sep="")
+  dataset2 <- dataset2 %>%
+    mutate(!!column_name := ifelse(`BMI Category` == bmi_category, 1, 0))
+}
+
+
+unique_sleep_disorders <- unique(dataset$`Sleep Disorder`)
+for (sleep_disorder in unique_sleep_disorders) {
+  column_name <- paste("SleepDisorder_", gsub(" ", "", sleep_disorder), sep="")
+  dataset2 <- dataset2 %>%
+    mutate(!!column_name := ifelse(`Sleep Disorder` == sleep_disorder, 1, 0))
+}
+
+head(dataset2)
+```
+
+```{r}
+dataset2 <- dataset2[, -c(1,2, 8, 13)]
+head(dataset2)
+```
+
+```{r}
+kolumny_liczbowe <- colnames(dataset2[, sapply(dataset2, is.numeric)])
+print(kolumny_liczbowe)
+```
+# MACIERZ KORELACJI 
+```{r}
+korelacja <- round(cor(dataset2[, kolumny_liczbowe]), 2)
+print(korelacja)
+```
+
+```{r}
+ggcorrplot(korelacja, type='lower')
+```
+## Analiza korelacji pomiędzy zmienną sleep duration a innymi zmiennymi 
+```{r}
+threshold <- 0.3
+
+cor_sleep_duration <- cor(dataset2[, kolumny_liczbowe])[, "Sleep Duration"]
+significant_variables <- names(cor_sleep_duration[abs(cor_sleep_duration) > threshold])
+
+
+for (variable in significant_variables) {
+  correlation_value <- cor_sleep_duration[variable]
+  cat(sprintf("Sleep Duration vs %s: %.2f\n", variable, correlation_value))
+}
+```
+```{r}
+cor_matrix <- as.matrix(cor_sleep_duration)
+ggcorrplot(cor_matrix, type = 'lower')
+```
+```{r}
+colnames(dataset2)
+```
+```{r}
+new_dataset <- dataset2[, c("Sleep Duration", "Age", "Quality of Sleep", "Stress Level", "Heart Rate", "BMI_Overweight", "BMI_Normal", "SleepDisorder_Insomnia", "SleepDisorder_None")]
+head(new_dataset)
+```
+# PODZIAŁ NA DANE TESTOWE I TRENINGOWE 
+
+```{r, echo=FALSE}
+MAE <- function(y_actual, y_predicted){
+  return(mean(abs(y_actual - y_predicted)))
+}
+MAPE <- function(y_actual, y_predicted){
+  return(mean(abs((y_actual-y_predicted)/y_actual))*100)
+}
+RMSE <- function(y_actual, y_predicted){
+  return(sqrt(mean((y_actual-y_predicted)^2)))
+}
+```
+
+```{r, echo=FALSE}
+library(broom)
+
+model_summary <- function(model, test_data, test_y){
+  model_glance <- broom::glance(model)
+  model_augment <- broom::augment(model)
+  train_mae <- mean(abs(model_augment$.resid))
+  train_mape <- mean(abs(model_augment$.resid/dplyr::pull(model_augment, var=1)))*100
+  predicted_y <- predict(model, test_data)
+  test_rmse <- sqrt(mean((test_y - predicted_y)^2))
+  test_mae <- mean(abs(test_y - predicted_y))
+  test_mape <- mean(abs((test_y - predicted_y)/test_y))*100
+  print("Wartośći charakterystyk liczbowych modelu.")
+  print("------------------------------------------")
+  cat("Treningowe R^2 wyniosło: ", model_glance$r.squared, "\n",
+  "Treningowe \"poprawione\" R^2 wyniosło: ", model_glance$adj.r.squared, "\n",
+  "Kryterium informacyjne Akaikego (AIC) wyniosło: ", model_glance$AIC, "\n",
+  "---------------------------------------------", "\n",
+  "Charakterystyki \"out-of-sample\"", "\n",
+  "Charakterystyka |   train  |   test   | \n", 
+  "RMSE wyniosło:  |", model_glance$sigma, "|", test_rmse , "|", "\n",
+  "MAE wyniosło:   |", train_mae, "|",  test_mae, "|" , "\n",
+  "MAPE wyniosło:  |", round(train_mape,2), "%|", round(test_mape,2), "%|",  "\n")
+}
+```
+
+```{r}
+set.seed(123)  
+partition <- createDataPartition(new_dataset$`Sleep Duration`, list=FALSE, p=0.80)
+new_dataset_train <- new_dataset[partition,]
+new_dataset_test <- new_dataset[-partition,]
+```
+
+```{r}
+quantile(new_dataset$`Sleep Duration`)
+```
+```{r}
+ggplot(new_dataset, aes(x = `Sleep Duration`)) + geom_histogram(binwidth = 0.25) + labs(title = "Rozkład ilości snu w godzinach", x = "Czas trwania snu", y = "Liczba obserwacji")
+```
+```{r}
+ggplot(new_dataset, aes(x=`Sleep Duration`)) + geom_boxplot(outlier.color = 'red', outlier.size = 5) + labs(title = 'Wykres pudełkowy ilości snu', x="Ilość snu w godzinach", y="") + scale_y_discrete(labels = NULL, breaks=NULL)
+```
+# MODEL REGRESJI PROSTEJ (Sleep Duration ~ Quality of Sleep)
+
+```{r}
+model_Quality_of_Sleep = lm(`Sleep Duration` ~  `Quality of Sleep`, data = new_dataset)
+summary(model_Quality_of_Sleep)
+model_summary(model_Quality_of_Sleep, new_dataset_test, new_dataset_test$`Sleep Duration`)
+```
+
+```{r}
+quantile(new_dataset$`Quality of Sleep`)
+```
+
+```{r}
+ggplot(new_dataset, aes(x = `Quality of Sleep`)) + geom_histogram(binwidth = 0.95) + labs(title = "Rozkład jakości snu", x = "Jakość snu", y = "Liczba obserwacji")
+```
+
+```{r}
+ggplot(new_dataset, aes(x=`Quality of Sleep`)) + geom_boxplot(outlier.color = 'red', outlier.size = 5) + labs(title = 'Wykres pudełkowy jakości snu', x="Jakość snu", y="") + scale_y_discrete(labels = NULL, breaks=NULL)
+```
+### Założenia modelu regresji liniowej prostej
+
+#### Założenie 1: Zależność liniowa
+
+```{r}
+ggplot(new_dataset, aes(x=`Sleep Duration`, y=`Quality of Sleep`)) + geom_point() + labs(title="Wykres punktowy zależności długości snu od jakości snu", x='Długość snu', y='Jakość snu') + geom_smooth(method='lm', formula=y~x, se=FALSE)
+```
+
+```{r}
+cor.test(new_dataset$`Sleep Duration`, new_dataset$`Quality of Sleep`)
+```
+
+#### Założenie 2: Rozkład reszt
+
+```{r}
+ggplot(model_Quality_of_Sleep, aes(sample=.resid)) + geom_qq() + geom_qq_line() + labs(title='Wykres kwartyl-kwartyl reszt', x='Kwartyle teoretyczne', y='Kwartyle próbkowe')
+```
+
+```{r}
+shapiro.test(model_Quality_of_Sleep$residuals)
+```
+
+```{r}
+log_transformed_resid <- log(model_Quality_of_Sleep$residuals)
+sqrt_transformed_resid <- sqrt(model_Quality_of_Sleep$residuals)
+shapiro.test(log_transformed_resid)
+shapiro.test(sqrt_transformed_resid)
+```
+
+```{r}
+log_transformed_resid <- log(model_Quality_of_Sleep$residuals[model_Quality_of_Sleep$residuals > 0])
+shapiro.test(log_transformed_resid)
+shapiro.test(sqrt_transformed_resid)
+```
+
+#### Założenie 3: Zerowa średnia reszt
+
+```{r}
+t.test(model_Quality_of_Sleep$residuals)
+```
+
+#### Założenie 4: Niezależność reszt
+
+```{r}
+lmtest::dwtest(model_Quality_of_Sleep)
+```
+
+#### Założenie 5: Homoskedatyczność
+
+```{r}
+plot(model_Quality_of_Sleep, which=3)
+```
+
+```{r}
+ggplot(model_Quality_of_Sleep, aes(.fitted, sqrt(abs(.stdresid)))) + geom_point() + stat_smooth(method='loess',formula=y~x,se=FALSE) + labs(title = 'Zależność pierwiastka standardowych reszt od dopasowanych wartości', x='Dopasowane wartości', y='Pierwiastek standardowych reszt')
+```
+
+```{r}
+install.packages("lmtest")
+library(lmtest)
+lmtest::bptest(model_Quality_of_Sleep)
+```
+# MODEL REGRESJI PROSTEJ (Sleep Duration ~ Stress Level)
+
+```{r}
+model_stress_level = lm(`Sleep Duration` ~  `Stress Level`, data = new_dataset)
+summary(model_stress_level)
+model_summary(model_stress_level, new_dataset_test, new_dataset_test$`Sleep Duration`)
+```
+### Założenia modelu regresji liniowej prostej
+
+#### Założenie 1: Zależność liniowa
+
+```{r}
+ggplot(new_dataset, aes(x=`Sleep Duration`, y=`Stress Level`)) + geom_point() + labs(title="Wykres punktowy zależności długości snu od poziomu stresu", x='Długość snu', y='Poziom stresu') + geom_smooth(method='lm', formula=y~x, se=FALSE)
+```
+
+```{r}
+cor.test(new_dataset$`Sleep Duration`, new_dataset$`Stress Level`)
+```
+
+#### Założenie 2: Rozkład reszt
+
+```{r}
+ggplot(model_stress_level, aes(sample=.resid)) + geom_qq() + geom_qq_line() + labs(title='Wykres kwartyl-kwartyl reszt', x='Kwartyle teoretyczne', y='Kwartyle próbkowe')
+```
+
+```{r}
+shapiro.test(model_stress_level$residuals)
+```
+
+```{r}
+log_transformed_resid <- log(model_stress_level$residuals)
+sqrt_transformed_resid <- sqrt(model_stress_level$residuals)
+shapiro.test(log_transformed_resid)
+shapiro.test(sqrt_transformed_resid)
+```
+
+
+#### Założenie 3: Zerowa średnia reszt
+
+```{r}
+t.test(model_stress_level$residuals)
+```
+
+#### Założenie 4: Niezależność reszt
+
+```{r}
+lmtest::dwtest(model_stress_level)
+```
+
+#### Założenie 5: Homoskedatyczność
+
+```{r}
+plot(model_stress_level, which=3)
+```
+
+```{r}
+ggplot(model_stress_level, aes(.fitted, sqrt(abs(.stdresid)))) + geom_point() + stat_smooth(method='loess',formula=y~x,se=FALSE) + labs(title = 'Zależność pierwiastka standardowych reszt od dopasowanych wartości', x='Dopasowane wartości', y='Pierwiastek standardowych reszt')
+```
+
+```{r}
+library(lmtest)
+lmtest::bptest(model_stress_level)
+```
+# MODEL REGRESJI WIELORAKIEJ 
+## Wszystkie zmienne 
+```{r}
+WIELORAKA1 <- lm( `Sleep Duration` ~ Age + `Quality of Sleep`+ `Stress Level` + `Heart Rate` + BMI_Overweight + BMI_Normal + SleepDisorder_None + SleepDisorder_Insomnia, data=new_dataset)
+summary(WIELORAKA1)
+model_summary(WIELORAKA1, new_dataset_test, new_dataset_test$`Sleep Duration`)
+```
+## Sleep_duration ~ Quality of Sleep+ Stress Level 
+```{r}
+WIELORAKA2 <- lm( `Sleep Duration` ~ `Quality of Sleep`+ `Stress Level` , data=new_dataset)
+summary(WIELORAKA2)
+model_summary(WIELORAKA2, new_dataset_test, new_dataset_test$`Sleep Duration`)
+```
+
+## Sleep_duration ~ Quality of Sleep+ Stress Level + Heart Rate
+
+```{r}
+WIELORAKA3 <- lm( `Sleep Duration` ~ `Quality of Sleep`+ `Stress Level` + `Heart Rate`, data=new_dataset)
+summary(WIELORAKA3)
+model_summary(WIELORAKA3, new_dataset_test, new_dataset_test$`Sleep Duration`)
+```
+## Sleep_duration ~ Quality of Sleep + Heart Rate
+```{r}
+WIELORAKA4 <- lm( `Sleep Duration` ~ `Quality of Sleep`+ `Heart Rate`, data=new_dataset)
+summary(WIELORAKA4)
+model_summary(WIELORAKA4, new_dataset_test, new_dataset_test$`Sleep Duration`)
+```
+
+#### Założenie 1: Normalność reszt
+
+```{r}
+ggplot(WIELORAKA4, aes(x=.resid)) + geom_histogram(bins=10) + labs(title='Histogram reszt z modelu', x='Reszty', y='Częstotliwość')
+```
+
+```{r}
+ggplot(WIELORAKA4, aes(sample=.resid)) + geom_qq() + geom_qq_line() + labs(title='Wykres kwantyl-kwantyl reszt', x='Kwantyle teoretyczne', y='Kwantyle próbkowe')
+```
+```{r}
+shapiro.test(WIELORAKA4$residuals)
+```
+
+
+#### Założenie 2: Zerowość średniej reszt
+
+```{r}
+t.test(WIELORAKA4$residuals)
+```
+#### Założenie 3: Niezależność reszt
+
+```{r, warning=FALSE}
+library(lmtest)
+lmtest::dwtest(WIELORAKA4)
+```
+
+#### Założenie 4: Homoskedastyczność
+
+```{r}
+plot(WIELORAKA4, which=3)
+```
+```{r}
+lmtest::bptest(WIELORAKA4)
+```
+
+#### Założenie 5: Liniowa niezależność
+
+Z macierzy korelacji 
+
+
+## Model regresji wielorakiej (interakcje)
+
+```{r}
+WIELORAKA_INTERAKCJE <- lm(`Sleep Duration` ~ `Quality of Sleep` * `Heart Rate`, data = new_dataset)
+summary(WIELORAKA_INTERAKCJE)
+model_summary(WIELORAKA_INTERAKCJE, new_dataset_test, new_dataset_test$`Sleep Duration`)
+```
+#### Założenie 1: Normalność reszt
+
+```{r}
+ggplot(WIELORAKA_INTERAKCJE, aes(x=.resid)) + geom_histogram(bins=10) + labs(title='Histogram reszt z modelu', x='Reszty', y='Częstotliwość')
+```
+
+```{r}
+ggplot(WIELORAKA_INTERAKCJE, aes(sample=.resid)) + geom_qq() + geom_qq_line() + labs(title='Wykres kwantyl-kwantyl reszt', x='Kwantyle teoretyczne', y='Kwantyle próbkowe')
+```
+```{r}
+shapiro.test(WIELORAKA_INTERAKCJE$residuals)
+```
+
+#### Założenie 2: Zerowość średniej reszt
+
+```{r}
+t.test(WIELORAKA_INTERAKCJE$residuals)
+```
+
+
+#### Założenie 3: Niezależność reszt
+
+```{r, warning=FALSE}
+library(lmtest)
+lmtest::dwtest(WIELORAKA_INTERAKCJE)
+```
+
+#### Założenie 4: Homoskedastyczność
+
+```{r}
+plot(WIELORAKA_INTERAKCJE, which=3)
+```
+```{r}
+lmtest::bptest(WIELORAKA_INTERAKCJE)
+```
+
+#### Założenie 5: Liniowa niezależność
+
+Z macierzy korelacji 
+
+## Sleep Duration ~ Age + Stress Level + Heart Rate + BMI_Overweight + BMI_Normal + SleepDisorder_None + SleepDisorder_Insomnia
+```{r}
+WIELORAKA5 <- lm( `Sleep Duration` ~ Age + `Stress Level` + `Heart Rate` + BMI_Overweight + BMI_Normal + SleepDisorder_None + SleepDisorder_Insomnia, data=new_dataset)
+summary(WIELORAKA5)
+model_summary(WIELORAKA5, new_dataset_test, new_dataset_test$`Sleep Duration`)
+```
+
+
+# WARTOŚCI WPŁYWOWE, ODLEGŁOŚĆ COOK'A DO MODELU REGRESJI WIELORAKIEJ Z WSZYSTKIMI ZMIENNYMI
+
+
+```{r}
+ggplot(WIELORAKA, aes(.hat, .stdresid)) + geom_point(aes(size=.cooksd)) + stat_smooth(method = 'loess', formula = y~x, se = FALSE) + labs(title='Laverage vs Standarized Residuals', x='Leverage', y='Standardized Residuals', size = 'Cooks distance')
+```
+
+```{r}
+new_dataset_2 <- new_dataset %>% mutate(cook_D = unlist(cooks.distance(WIELORAKA))) %>% dplyr::filter(cook_D <= mean(cook_D))
+new_dataset_2
+```
+```{r}
+set.seed(123) 
+partition <- createDataPartition(new_dataset_2$`Sleep Duration`, list=FALSE, p=0.8)
+new_dataset_2_train <- new_dataset_2[partition,]
+new_dataset_2_test <- new_dataset_2[-partition,]
+```
+
+Zobaczmy jak zachowa się model dopasowany do danych po powyższej operacji.
+```{r}
+WIELORAKA6 <- lm(`Sleep Duration` ~ Age + `Quality of Sleep`+ `Stress Level` + `Heart Rate` + BMI_Overweight + BMI_Normal + SleepDisorder_None + SleepDisorder_Insomnia, data=new_dataset_2)
+summary(WIELORAKA6)
+model_summary(WIELORAKA6, new_dataset_2_test, new_dataset_2_test$`Sleep Duration`)
+```
+
+```{r}
+plot(WIELORAKA6, which = c(1:3,5))
+```
+
+
+#### Założenie 1: Normalność reszt
+
+```{r}
+ggplot(WIELORAKA6, aes(x=.resid)) + geom_histogram(bins=10) + labs(title='Histogram reszt z modelu', x='Reszty', y='Częstotliwość')
+```
+
+```{r}
+ggplot(WIELORAKA6, aes(sample=.resid)) + geom_qq() + geom_qq_line() + labs(title='Wykres kwantyl-kwantyl reszt', x='Kwantyle teoretyczne', y='Kwantyle próbkowe')
+```
+```{r}
+shapiro.test(WIELORAKA6$residuals)
+```
+
+#### Założenie 2: Zerowość średniej reszt
+
+```{r}
+t.test(WIELORAKA6$residuals)
+```
+
+
+#### Założenie 3: Niezależność reszt
+
+```{r, warning=FALSE}
+library(lmtest)
+lmtest::dwtest(WIELORAKA6)
+```
+
+#### Założenie 4: Homoskedastyczność
+
+```{r}
+plot(WIELORAKA6, which=3)
+```
+```{r}
+lmtest::bptest(WIELORAKA6)
+```
+
+#### Założenie 5: Liniowa niezależność
+
+```{r}
+macierz <- round(cor(new_dataset_2[, -10]), 2)
+macierz
+```
+
+
